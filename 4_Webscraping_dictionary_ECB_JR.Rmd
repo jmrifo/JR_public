@@ -1,0 +1,430 @@
+---
+title: "Webscraping ECB"
+author: "Johannes Renz"
+date: "2023-06-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This R Script scrapes all Press Releases by the ECB as well as Speeches by President, Vice President and Board Members of the ECB. Dates and Headlines are also mostly collected. The Scraping takes about 30 Minutes. Following this, an initial dictionary-based analysis is done. Details are in the submitted paper.
+
+Outcome datasets that will be saved for further analysis should be:
+- docs_trim, 125000 obs, 1 var (for BERTopic)
+- results_trim, 5500 obs, 6 var (for relatio)
+- inequality_dict_df,  45 obs, 2 var (for Paper directly)
+
+
+Outcome datasets that will not be saved for dictionary analysis should be:
+- docs_trim, 125000 obs, 2 var (was used to check specific documents´ result from the dictionary)
+
+load packages, clear memory and setwd
+```{r}
+rm(list=ls())
+library(kableExtra)
+library(dplyr)
+library(rvest)
+library(tidyr)
+library(tidyverse) 
+library(stringr) 
+library(tidytext) 
+library(textdata)
+library(progress)
+library(xtable)
+setwd("/Users/johannesrenz/Library/Mobile Documents/com~apple~CloudDocs/Uni/Comp Text")
+``` 
+
+
+
+
+This cell scrapes all entries from all press statement subsections, as well as speeches subsections. Links are filtered for English language only.
+
+```{r}
+links_list<- c("https://www.ecb.europa.eu/press/pr/activities/ecb/html/index.en.html",
+               "https://www.ecb.europa.eu/press/pr/activities/mopo/html/index.en.html",
+               "https://www.ecb.europa.eu/press/pr/activities/stats/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/paym/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/prud/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/intco/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/bc/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/legal/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/ssm/html/index.en.html",
+                "https://www.ecb.europa.eu/press/pr/activities/others/html/index.en.html",
+               "https://www.ecb.europa.eu/press/key/speaker/bm/html/index.en.html",
+               "https://www.ecb.europa.eu/press/key/speaker/vicepres/html/index.en.html",
+               "https://www.ecb.europa.eu/press/key/speaker/pres/html/index.en.html")
+
+
+
+all_links <- character()  # Create an empty character vector to store the links
+
+for (i in seq_along(links_list)) {
+  page <- read_html(links_list[i])
+  links <- page %>%
+    html_nodes(".arrow") %>%
+    html_attr("href")
+  
+  all_links <- c(all_links, links)  # Concatenate the links with the existing vector
+}
+
+# Filter for English
+all_links <- all_links[grep("en.html$", all_links)]
+
+```
+
+This cell scrapes the content from the links that were just extracted. This is split into two parts, because of timeouts with the requests. 
+
+```{r}
+
+l<- length(all_links)
+l2<- l/2
+all_links_1<-all_links[1:l2-1]
+all_links_2<-all_links[l2:l]
+
+
+# Create empty df
+results_1 <- data.frame(link = character(),
+                      publicationdate = character(),
+                      publicationdate_old = character(),
+                      title = character(),
+                      sectionp = character(),
+                      #summary = character(),
+                      stringsAsFactors = FALSE)
+
+# Get the total number of links
+total_links <- length(all_links_1)
+
+# Initialize progress bar
+pb <- progress_bar$new(total = total_links, format = "[:bar] :percent :eta")
+
+# Iterate over links
+for (i in seq_along(all_links_1)) {
+  link <- all_links[i]
+
+  # Complete URL
+  full_url <- paste0("https://www.ecb.europa.eu", link)
+
+  # Read the press statement page
+  press_page <- read_html(full_url)
+
+  # Extract sections
+  publication_date <- press_page %>% html_node(".ecb-publicationDate") %>% html_text()
+  publication_date_old <- press_page %>% html_node(".ecb-pressContentPubDate") %>% html_text()
+  title <- press_page %>% html_node("h1") %>% html_text()
+
+  # Handle section and summary extraction
+  section <- NA
+  summary <- NA
+  section_nodes <- press_page %>% html_nodes(".section p")
+  if (length(section_nodes) > 0) {
+    section <- section_nodes %>% html_text() %>% paste(collapse = " ")
+    summary_nodes <- press_page %>% html_nodes(".section li")
+    if (length(summary_nodes) > 0) {
+      summary <- summary_nodes %>% html_text() %>% paste(collapse = " ")
+    }
+  }
+
+  # Bind rows
+  row <- data.frame(link = full_url,
+                    publicationdate = publication_date,
+                    publicationdate_old = publication_date_old,
+                    title = title,
+                    sectionp = section,
+                    #summary = summary,
+                    stringsAsFactors = FALSE)
+
+  results_1 <- rbind(results_1, row)
+  
+  # Update progress bar
+  pb$tick()
+}
+
+#close progess bar
+pb$terminate()
+```
+
+Second half (Basically same Code as before):
+
+```{r}
+
+# Create empty df
+results_2 <- data.frame(link = character(),
+                      publicationdate = character(),
+                      publicationdate_old = character(),
+                      title = character(),
+                      sectionp = character(),
+                      #summary = character(),
+                      stringsAsFactors = FALSE)
+
+# Get the total number of links
+total_links <- length(all_links_2)
+
+# Initialize progress bar
+pb <- progress_bar$new(total = total_links, format = "[:bar] :percent :eta")
+
+# Iterate over links
+for (i in seq_along(all_links_2)) {
+  link <- all_links[i]
+
+  # Complete URL
+  full_url <- paste0("https://www.ecb.europa.eu", link)
+
+  # Read the press statement page
+  press_page <- read_html(full_url)
+
+  # Extract sections
+  publication_date <- press_page %>% html_node(".ecb-publicationDate") %>% html_text()
+  publication_date_old <- press_page %>% html_node(".ecb-pressContentPubDate") %>% html_text()
+  title <- press_page %>% html_node("h1") %>% html_text()
+
+  # Handle section and summary extraction
+  section <- NA
+  summary <- NA
+  section_nodes <- press_page %>% html_nodes(".section p")
+  if (length(section_nodes) > 0) {
+    section <- section_nodes %>% html_text() %>% paste(collapse = " ")
+    summary_nodes <- press_page %>% html_nodes(".section li")
+    if (length(summary_nodes) > 0) {
+      summary <- summary_nodes %>% html_text() %>% paste(collapse = " ")
+    }
+  }
+
+  # Bind rows
+  row <- data.frame(link = full_url,
+                    publicationdate = publication_date,
+                    publicationdate_old = publication_date_old,
+                    title = title,
+                    sectionp = section,
+                    #summary = summary,
+                    stringsAsFactors = FALSE)
+
+  results_2 <- rbind(results_2, row)
+  
+  # Update progress bar
+  pb$tick()
+}
+
+#close progess bar
+pb$terminate()
+
+
+```
+
+This cell concats the two dataframes, drops unwanted observations and tries to get a date for all obs
+
+```{r}
+
+results<-rbind(results_1,results_2)
+
+#fill column of publ date with old html coded publ date
+results_trim$publicationdate[is.na(results_trim$publicationdate)]<-results_trim$publicationdate_old[is.na(results_trim$publicationdate)]
+
+#remove leading space, otherwise asDate is confused
+results_trim$publicationdate <- trimws(results_trim$publicationdate)
+
+#change date format
+results_trim$date <- as.Date(results_trim$publicationdate, format = "%d %B %Y")
+results_trim$date <- format(results_trim$date, "%m-%Y")
+
+
+```
+
+This cell saves the results.
+
+```{r}
+
+write.csv(results_trim, file="ecb_full_scrape_03.csv")
+
+```
+
+This cell scrapes the paragraph form for BERTopic Topic analysis. 
+
+```{r}
+
+#create empty df
+docs <- data.frame(sectionp = character(),
+                      stringsAsFactors = FALSE)
+
+# Initialize progress bar
+pb <- progress_bar$new(total = length(all_links), format = "[:bar] :percent :eta")
+
+# iterate over links
+for (link in all_links) {
+  #complete URL
+  full_url <- paste0("https://www.ecb.europa.eu", link)
+  
+  #read the speeches page
+  press_page <- read_html(full_url)
+  
+  #extract section
+  section <- press_page %>% html_nodes(".section p") %>% html_text()
+  
+  #bind rows
+  row <- data.frame(sectionp = section,
+                    stringsAsFactors = FALSE)
+  
+  docs <- rbind(docs, row)
+
+ # Update progress bar
+  pb$tick()
+}
+
+#close progess bar
+pb$terminate()
+
+#remove obs with only notes to graphics or *** by character length , false positive limited, since we only want to look at paragraphs of speeches
+
+docs_trim <- docs[nchar(docs$sectionp) >= 50, , drop = FALSE]
+
+
+write.csv(docs_trim, file="docs_ecb_scrape.csv")
+
+```
+
+
+Initial Analysis with dictionaries: Words related to inequality are checked for how often they arise in the dataset.
+
+```{r}
+
+#define dictionary
+
+ineq_dict <- c('inequality', 'inequal', 'redistribution', 'redistribute','wealth gap', 'income disparity', 'social inequality', 'economic disparity', 'poverty', 'affluence', 'social mobility', 'socioeconomic divide', 'wage inequality', 'class divide', 'marginalized', 'underprivileged', 'social justice', 'disadvantaged', 'unequal', 'disparity', 'top 1%', 'wealth distribution','wealth concentration', 'income gap', 'economic injustice', 'regressive taxation','inclusive growth', 'inclusive prosperity', 'structural inequality', 'intergenerational poverty','wealth redistribution', 'opportunity gap', 'wealth inequality', 'income inequality', 'financial inequality', 'economic mobility', 'inequality reduction', 'fairness', 'distribution of wealth', 'distribution of income', 'gap between rich and poor')
+
+
+# Function to count word occurrences in a text
+count_occurrences <- function(text, words) {
+  word_counts <- sapply(words, function(word) sum(grepl(word, text, ignore.case = TRUE)))
+  total_words <- length(unlist(strsplit(text, "\\s+")))
+  word_percentages <- word_counts / total_words * 100
+  data.frame(Word = words, Absolute_Count = word_counts, Relative_Percentage = word_percentages, stringsAsFactors = FALSE)
+}
+
+
+# Apply the function to the Text column in the data frame
+inequality_dict_df <- count_occurrences(docs_trim$sectionp, ineq_dict)
+
+# Calculate the sum of absolute counts and relative percentages
+sum_absolute_counts <- sum(inequality_dict_df$Absolute_Count)
+sum_relative_percentages <- sum(inequality_dict_df$Relative_Percentage)
+
+
+# Create a vectorized function to count dictionary words in each observation
+count_dictionary_words <- function(text, words) {
+  text <- tolower(text)  # Convert the text to lowercase
+  words <- tolower(words)  # Convert the dictionary words to lowercase
+  word_counts <- sapply(words, function(word) sum(str_detect(text, paste0("\\b", word, "\\b"))))
+  total_count <- sum(word_counts)
+  return(total_count)
+}
+
+# Apply the function to the Text column in the data frame
+docs_trim$dict_count <- sapply(docs_trim$sectionp, count_dictionary_words, words = ineq_dict)
+```
+
+This Cell saves the output into tex form.
+
+```{r}
+#output and save the dictionary with counts to tex format:
+
+#Reset Index and keep only relevant columns
+ineq_dic_out<- data.frame(Index = 1:nrow(inequality_dict_df), inequality_dict_df, row.names = NULL)
+ineq_dic_out <- subset(ineq_dic_out, select = c(Word,Absolute_Count))
+
+#Add a sum at the bottom
+sum_row <- ineq_dic_out %>%
+  summarize(Word = "Total", Absolute_Count = sum(Absolute_Count))
+ineq_dic_out <- bind_rows(ineq_dic_out, sum_row)
+print(xtable(ineq_dic_out, type = "latex"), file = "ineq_dic.tex")
+
+```
+
+FEDERAL RESERVE DATASET
+
+```{r}
+
+links_list<- c("https://www.federalreserve.gov/newsevents/pressreleases/2022-press.htm",
+               "https://www.federalreserve.gov/newsevents/pressreleases/2021-press.htm",
+               "https://www.federalreserve.gov/newsevents/pressreleases/2020-press.htm",
+               "https://www.federalreserve.gov/newsevents/pressreleases/2019-press.htm",
+               "https://www.federalreserve.gov/newsevents/pressreleases/2018-press.htm",
+               "https://www.federalreserve.gov/newsevents/pressreleases/2017-press.htm",
+               "https://www.federalreserve.gov/newsevents/pressreleases/2016-press.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2015all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2014all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2013all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2012all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2011all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2010all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2009all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2008all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2007all.htm",
+               "https://www.federalreserve.gov//newsevents/pressreleases/2006all.htm"
+               
+               )
+
+# Create an empty data frame to store the data
+fed_links_df <- data.frame(time = character(), link = character(), stringsAsFactors = FALSE)
+
+for (i in seq_along(links_list)) {
+  page <- read_html(links_list[i])
+  
+  times <- page %>%
+    html_nodes(".eventlist__time time") %>%
+    html_text()
+  
+  links <- page %>%
+    html_nodes(".eventlist__event a") %>%
+    html_attr("href")
+  
+  # Create a data frame for the current page
+  current_df <- data.frame(time = times, link = links, stringsAsFactors = FALSE)
+  
+  # Append the current data frame to the main data frame
+  fed_links_df <- rbind(fed_links_df, current_df)
+}
+
+
+
+```
+
+
+```{r}
+
+#create empty df
+docs <- data.frame(sectionp = character(),
+                      stringsAsFactors = FALSE)
+
+fed_links = as.list(fed_links_df$link)
+
+# Initialize progress bar
+pb <- progress_bar$new(total = length(fed_links), format = "[:bar] :percent :eta")
+
+# iterate over links
+for (link in fed_links) {
+  #complete URL
+  full_url <- paste0("https://www.federalreserve.gov", link)
+  
+  #read the speeches page
+  press_page <- read_html(full_url)
+  
+  #extract section
+  section <- press_page %>% html_nodes("#article p") %>% html_text()
+  
+  #bind rows
+  row <- data.frame(sectionp = section,
+                    stringsAsFactors = FALSE)
+  
+  docs <- rbind(docs, row)
+
+ # Update progress bar
+  pb$tick()
+}
+
+#close progess bar
+pb$terminate()
+
+
+```
