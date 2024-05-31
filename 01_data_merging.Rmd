@@ -1,0 +1,351 @@
+---
+title: "01_data_merging"
+author: "Johannes Renz"
+date: "2024-02-05"
+output: html_document
+---
+
+```{r, echo=FALSE, include=FALSE}
+rm(list=ls())
+
+libs <- c ("dplyr", "stringdist", "stringr", "ggplot2", "openxlsx", "haven", "data.table", "tidyr", "fixest", "ggplot2", "plm", "lubridate", "anytime", "remotes", "did", "git2r", "httr", "tools", "base64enc")
+libs_to_install <- libs[!(libs %in% installed.packages())]
+sapply(libs_to_install, install.packages, character_only = TRUE)
+sapply(libs, library, character.only = TRUE)
+
+
+ceo_dismissal<-read_dta("//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/rawdata/CEODismissal/CEO Dismissal Database Posted to Web 9Nov23.dta")
+
+
+crsp<-fread("//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/rawdata/WRDS/crsp_99.csv")
+
+execucomp<-fread("//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/rawdata/WRDS/comp_execucomp.csv")
+
+
+boardex<-fread("//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/rawdata/WRDS/boardex.csv")
+
+
+
+```
+
+select relevant ranges and variables from datasets
+
+```{r}
+
+execucomp<-execucomp%>%
+  select(GVKEY, #company identifier
+         YEAR, #year
+         SIC, #industry
+         SPCODE, # SP-> SP500, SM-> smallcap, MD -> midcap, EX -> not in S&P INDEX
+         TICKER, #stockticker
+         EXEC_FULLNAME, # full exec name
+         CEOANN,# identifies exec who held ceo that year
+         EXECID, # executive ID number
+         GENDER, #CEO gender
+         PAGE, #present age
+         CO_PER_ROL, # gives unique CEO company combination
+         AGE, #CEO AGE
+         SHROWN_EXCL_OPTS_PCT, # percentage of shares owned by ceo excluding options if greater than 1%
+  )
+
+execucomp<-subset(execucomp, execucomp$YEAR>=1998)
+execucomp<-subset(execucomp, execucomp$CEOANN=="CEO")
+
+
+
+crsp<-crsp%>%
+  select(GVKEY, # company identifier
+         fyear, # year
+         conm, # nompany name
+         tic, #ticker
+         weburl, #WEB URL
+         prcc_c, #closing price, annual
+         at #firm size
+  )
+
+
+crsp$year<-crsp$fyear
+names(execucomp)[names(execucomp)=="YEAR"]<-"year"
+crsp<-subset(crsp,crsp$year>=1998)
+
+filter<-crsp%>%group_by(GVKEY, year)%>%filter(n()>1) # some double obs, but same values (check with this filter df)
+crsp<-crsp%>%
+  group_by(GVKEY, year)%>%
+  slice_head(n=1) #deal with double obs
+
+
+names(ceo_dismissal)[names(ceo_dismissal)=="gvkey"]<-"GVKEY"
+names(ceo_dismissal)[names(ceo_dismissal)=="co_per_rol"]<-"CO_PER_ROL"
+
+
+
+filter<-ceo_dismissal%>%group_by(CO_PER_ROL, fyear)%>%filter(n()>1) # some double obs, but same values
+
+ceo_dismissal<-subset(ceo_dismissal, fyear>=1998)
+
+
+boardex<-boardex%>%
+  select(
+    BoardID, #Board ID
+    DirectorID, #Director ID
+    RoleName, # Role of Board member
+    GenderRatio, #Gender Ratio of Board
+    AnnualReportDate,#report date / year var
+    Ticker #ticker
+  )
+
+```
+
+Generate board level variables
+
+```{r}
+
+boardex_post<-boardex%>%
+  mutate(# get year variable
+        year=year(AnnualReportDate), 
+        # generate duality variable (CEO member of board)
+         duality=as.integer(grepl("CEO", RoleName, fixed=TRUE)))%>% 
+  # aggregate to firm year level
+  group_by(Ticker, year)%>% 
+    summarize(
+      gender_ratio=mean(GenderRatio, na.rm=TRUE), 
+      #mean or first does not matter, since it returns the same values
+      duality=max(duality, na.rm=TRUE),
+      #board size is number of registered directors:
+      board_size=n(),
+            # just to deal with the column and retain it, again it does not matter if its first or last, all are consistent anyways
+      TICKER=first(Ticker),
+      .groups="drop")
+
+
+```
+
+Run merges
+
+```{r}
+
+ceo_dismissal$year<-ceo_dismissal$fyear
+
+df<-left_join(execucomp, crsp, by=c("GVKEY", "year"))
+
+df<-left_join(df, ceo_dismissal, by=c("CO_PER_ROL", "fyear"))
+
+names(df)[names(df)=="year.x"]<-"year"
+df<-left_join(df, boardex_post, by=c("TICKER", "year"))
+
+
+sum(is.na(df$TIC))
+if (sum(df$TIC!=df$TICKER)!=0){stop("TICKERS UNMATCHED")} # throw error for inconsistent tickers, just to double check the gvkey and co_per_rol joins
+
+```
+
+load glassdoor data
+
+```{r}
+
+rm(list=setdiff(ls(), "df")) #drop all intermediate dfs
+
+reviews<-fread("//fs2019-02/revelio$/analysis/newdata/reviews_eng_usa_clean.csv") 
+
+```
+
+handle glassdoor data, generate numerical ceo rating
+
+```{r}
+
+reviews<-reviews%>%
+  select(year,company,rating_overall,rating_senior_leadership,rating_ceo,ticker, website)
+
+reviews$ceo_approve=ifelse(reviews$rating_ceo=="APPROVE",1,0)
+reviews$ceo_disapprove<-ifelse(reviews$rating_ceo=="DISAPPROVE",1,0)
+reviews$ceo_rating<-reviews$ceo_approve-reviews$ceo_disapprove
+#this is the same as including no opinion as speerate ifelse, since all non approve or disapprove are no opinions
+
+reviews<-reviews%>%select(-rating_ceo, -ceo_approve, -ceo_disapprove)
+#drop uneccessary intermediate columns
+
+```
+
+aggregate reviews to firm year level
+
+```{r}
+
+reviews_aggregated<-reviews%>%
+  group_by(ticker, year)%>%
+  summarise(across(where(is.numeric), ~mean(.)),
+            across(where(is.character), ~first(.)), #character columns are not used anyway, but are sometimes interesting for troubleshooting
+            n_obs = n(),
+            .groups="drop")
+
+```
+
+
+
+```{r}
+
+df<-df%>%mutate(merge_id=row_number()) #number generated to keep track and filter matches
+
+names(df)[names(df)=="year.x"]<-"year"
+names(df)[names(df)=="tic"]<-"ticker"
+
+#step 1: ticker matches
+
+panel1<-inner_join(df, reviews_aggregated, by=c("ticker", "year"))#this is the main glassdoor-df merge
+
+sum(!is.na(panel1$ceo_rating)) #just some checks 
+sum(panel1$website!=panel1$website.y) #same, just to see that websites match
+
+
+
+#step2 website matches
+
+leftovers<-anti_join(df, panel1, by=c("ticker", "year"))#this gets all unmatched columns
+
+names(leftovers)[names(leftovers)=="weburl"]<-"website"
+
+
+panel2<-inner_join(leftovers, reviews_aggregated, by=c("website", "year"))#this matches exact website matches
+
+panel_merged<-rbind(panel1, panel2, fill=TRUE)#binds both matched panels together
+
+
+#step3 merge both based on merging keys
+cols<-colnames(reviews_aggregated)
+cols<-c(cols, "merge_id")
+
+panel_merged <- panel_merged[, ..cols, drop = FALSE]
+
+
+panel<-left_join(df, panel_merged, by="merge_id")
+
+
+
+
+
+
+```
+
+
+
+```{r}
+
+panel$female=ifelse(panel$GENDER=="FEMALE",1,0)
+panel$male=ifelse(panel$GENDER=="MALE",1,0)
+
+sum(panel$female)
+
+
+filter<-panel%>%group_by(GVKEY.x, year.x)%>%filter(n()>1) # some double obs, but same values
+
+panel<-panel%>%
+  group_by(GVKEY.x, year.x)%>%
+  slice_head(n=1)
+
+
+
+```
+
+
+
+```{r}
+
+rm(list=setdiff(ls(), "panel")) #drop all intermediate dfs
+gc() #free up memory
+
+df<-panel
+
+names(df)[names(df)=="GVKEY.x"]<-"gvkey"
+names(df)[names(df)=="year.x"]<-"year"
+
+```
+
+this cell just double checks that the ceo_dismissal database runs synchronous to execucomp
+
+```{r}
+
+df<-df%>%arrange(gvkey,year)%>%
+  group_by(gvkey)%>%
+  mutate(
+    EXECID_lag=dplyr::lag(EXECID, n=1),
+   departure_code_tcor=dplyr::lag(departure_code, n=1),#departure codes are coded in the year of departure, not the turnover year, which is the following
+   ceo_dismissal_tcor=lag(ceo_dismissal, n=1)
+  )
+# calculate the turnover
+df$ceo_change <- ifelse(!is.na(df$departure_code_tcor), 1, 0)
+df$ceo_change[df$departure_code_tcor %in% c(7, 8, 9)] <- 0
+
+table(df$ceo_change)
+
+sum(df$ceo_change, na.rm=TRUE)
+print("both")
+sum(!is.na(df$departure_code_tcor)&df$ceo_change==1)
+print("only execucomp")
+sum(!is.na(df$departure_code_tcor)&df$ceo_change==0)
+print("only dds")
+sum(is.na(df$departure_code_tcor)&df$ceo_change==1)
+print("neither")
+sum(is.na(df$departure_code_tcor)&df$ceo_change==0) 
+
+uniqueN(df$gvkey)
+uniqueN(df$co_pre_rol)
+df<-df[order(df$gvkey, df$year),]
+
+df<-df%>%select(-notes,-sources,-eight_ks) #enconding issues when exporting
+
+```
+
+generate estimation related variables
+
+```{r}
+
+df<-df%>%
+  group_by(gvkey)%>%
+  mutate(
+    prcc_c_lag=dplyr::lag(prcc_c, n=1),
+    return=((prcc_c-prcc_c_lag)/prcc_c_lag),
+    #total weights (not used in replication, but some other commands require specification like this)
+    weights=sum(n_obs, na.rm=TRUE),
+    #mean weights (these are used later)
+    weights_adj=floor(mean(n_obs, na.rm=TRUE)) 
+    )
+
+df<-subset(df, year>=2000)
+```
+
+export dataset
+
+```{r}
+
+df<-df%>%
+  select(-coname)#encoding issues
+
+write.csv(df,"//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/tmp/base_panel.csv")
+
+```
+
+prepare industry returns for merging in STATA (final merging done in stata, because ffind command exists in STATA to classify industries accorign to the classification used.)
+
+Note that due to weird data formatting, some data processing was already done by hand
+
+```{r}
+
+ind_ret<-read.csv("//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/rawdata/industry_returns/12_Industry_Portfolios_Wout_Div.csv",sep=",")
+
+ind_ret<-ind_ret[1:96, ]#weighted
+
+
+ind_ret<-ind_ret%>%
+  pivot_longer(cols = setdiff(colnames(ind_ret), "year"), names_to= "industry", values_to = "ind_return" ) #pivot to long
+
+#clean double spaces
+ind_ret[] <- lapply(ind_ret, function(x) gsub(" ", "", x))
+
+ind_ret<-subset(ind_ret, year>=2000)
+
+#convert to numeric columns
+ind_ret$industry<-as.numeric(sub("X", "", ind_ret$industry))
+ind_ret$year<-as.numeric(ind_ret$year)
+
+write_dta(ind_ret,"//vmpfs-int/ag-int$/05_Forschungsprojekte/AliRenz/analysis/tmp/industry_returns.dta")
+
+```
