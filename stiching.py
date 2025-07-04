@@ -1,10 +1,17 @@
-"""
-@johannesrenz
-"""
-
 import os
 import unicodedata
 import re
+import argparse  # <-- NEW
+
+# Argument parser for optional character replacement
+parser = argparse.ArgumentParser(description="Stitch scripts together with optional character replacement.")
+parser.add_argument(
+    "--replace-invalid-chars",
+    action="store_true",
+    default=False,  # Change to True if you want to enable replacement by default
+    help="Replace non-ASCII/invalid characters with [INVALID-CHAR]."
+)
+args = parser.parse_args()
 
 # Hardcoded list of scripts to stitch together
 files_to_stitch = [
@@ -28,17 +35,24 @@ for fname in files_to_stitch:
         text = raw.decode("utf-8", errors="replace")
         text = unicodedata.normalize("NFC", text)
 
-        # Count and replace both "�" and all non-ASCII characters
-        num_invalid = text.count("�")
-        # Count non-ASCII chars (excluding already counted "�")
-        non_ascii_matches = re.findall(r'[^\x00-\x7F]', text)
-        num_invalid += len(non_ascii_matches)
-        total_replacements += num_invalid
-        file_replacements[fname] = num_invalid
+        num_invalid = 0
+        if args.replace_invalid_chars:
+            # Count and replace both "�" and all non-ASCII characters
+            num_invalid = text.count("�")
+            non_ascii_matches = re.findall(r'[^\x00-\x7F]', text)
+            num_invalid += len(non_ascii_matches)
+            total_replacements += num_invalid
+            file_replacements[fname] = num_invalid
 
-        # Replace all non-ASCII chars (including "�") with [INVALID-CHAR]
-        text = re.sub(r'[^\x00-\x7F]', '[INVALID-CHAR]', text)
-        text = text.replace("�", "[INVALID-CHAR]")
+            # Replace all non-ASCII chars (including "�") with [INVALID-CHAR]
+            text = re.sub(r'[^\x00-\x7F]', '[INVALID-CHAR]', text)
+            text = text.replace("�", "[INVALID-CHAR]")
+        else:
+            # Just count occurrences, no replacement
+            num_invalid = text.count("�") + len(re.findall(r'[^\x00-\x7F]', text))
+            total_replacements += num_invalid
+            file_replacements[fname] = num_invalid
+
         stitched_contents.append((fname, text))
 
 note = (
@@ -52,14 +66,15 @@ note = (
     + (
         "#Some non-compatible characters were replaced with [INVALID-CHAR].\n"
         f"#Total non-UTF8 characters replaced: {total_replacements}\n"
-        if total_replacements > 0
-        else "# No non-UTF8 characters found in the stitched files.\n"
+        if args.replace_invalid_chars and total_replacements > 0
+        else "# Character replacement was disabled or no non-UTF8 characters found.\n"
     )
     + "# -----------------------------------------------\n\n"
     + '# Note: This file is for reference only. It combines multiple scripts into one. It should run though.\n'
     + "# -----------------------------------------------\n\n"
 )
 
+os.makedirs(os.path.dirname(output_file), exist_ok=True)
 with open(output_file, "w", encoding="utf-8") as outfile:
     outfile.write(note)
     for fname, text in stitched_contents:
@@ -69,3 +84,5 @@ with open(output_file, "w", encoding="utf-8") as outfile:
 
 print(f"Stitched {len(stitched_contents)} files into {output_file}")
 print(f"Total non-UTF8 characters replaced: {total_replacements}")
+if not args.replace_invalid_chars:
+    print("Character replacement was disabled.")
