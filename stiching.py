@@ -83,6 +83,8 @@ with open(output_file, "w", encoding="utf-8") as outfile:
         outfile.write("\n\n")
 
 print(f"Stitched {len(stitched_contents)} files into {output_file}")
-print(f"Total non-UTF8 characters replaced: {total_replacements}")
+if args.replace_invalid_chars:
+    print(f"Total non-UTF8 characters replaced: {total_replacements}")
 if not args.replace_invalid_chars:
-    print("Character replacement was disabled.")
+    print(f"Total non-UTF8 characters detected: {total_replacements}")
+    print("Character replacement was disabled. \n Tex use not advised.")
